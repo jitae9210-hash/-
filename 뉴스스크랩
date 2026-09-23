@@ -1,0 +1,286 @@
+from datetime import datetime, timedelta
+import random
+import re
+import pandas as pd
+import requests
+import streamlit as st
+
+st.set_page_config(
+    page_title="스마트 뉴스 스크랩 뷰어", page_icon="📰", layout="wide"
+)
+
+st.title("📰 맞춤형 뉴스 스마트 스크랩 앱")
+st.markdown(
+    "등록된 핵심 키워드와 지정한 기간 동안 실제 보도된 뉴스가 있는 경우에만"
+    " 깔끔하게 모아 보여줍니다."
+)
+
+# 세션 상태 초기화 (기본 키워드 설정)
+if "keyword_list" not in st.session_state:
+  st.session_state.keyword_list = [
+      "탄소배출권",
+      "탄소중립",
+      "녹색전환",
+      "녹색금융",
+      "탄소세",
+      "자발적탄소시장",
+      "전기차보조금",
+      "재생에너지",
+      "RE100",
+      "NDC",
+      "VCM",
+  ]
+
+# ==========================================
+# 사이드바: 스크랩 설정 (기간, 키워드, API)
+# ==========================================
+st.sidebar.header("⚙️ 스크랩 설정")
+
+st.sidebar.subheader("📅 조회 기간 설정")
+today = datetime.now().date()
+default_start = today - timedelta(days=1)
+
+start_date = st.sidebar.date_input("시작일", value=default_start)
+end_date = st.sidebar.date_input("종료일", value=today)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🏷️ 키워드 관리")
+new_keyword = st.sidebar.text_input(
+    "키워드 추가", placeholder="예: CCUS, K-ETS"
+)
+
+if st.sidebar.button("➕ 키워드 추가하기", use_container_width=True):
+  if new_keyword.strip():
+    if new_keyword.strip() not in st.session_state.keyword_list:
+      st.session_state.keyword_list.append(new_keyword.strip())
+      st.rerun()
+    else:
+      st.sidebar.warning("이미 등록된 키워드입니다.")
+  else:
+    st.sidebar.warning("키워드를 입력해주세요.")
+
+if st.sidebar.button("🔄 기본 키워드로 초기화", use_container_width=True):
+  st.session_state.keyword_list = [
+      "탄소배출권",
+      "탄소중립",
+      "녹색전환",
+      "녹색금융",
+      "탄소세",
+      "자발적탄소시장",
+      "전기차보조금",
+      "재생에너지",
+      "RE100",
+      "NDC",
+      "VCM",
+  ]
+  st.rerun()
+
+st.sidebar.markdown("**📌 현재 등록된 키워드:**")
+if st.session_state.keyword_list:
+  for idx, kw in enumerate(st.session_state.keyword_list):
+    cols = st.sidebar.columns([4, 1])
+    cols[0].markdown(
+        f"<span style='background-color: #f0f2f6; padding: 3px 6px;"
+        f" border-radius: 4px; font-size: 13px;'>🏷️ {kw}</span>",
+        unsafe_allow_html=True,
+    )
+    if cols[1].button("❌", key=f"del_{idx}"):
+      st.session_state.keyword_list.pop(idx)
+      st.rerun()
+else:
+  st.sidebar.info("등록된 키워드가 없습니다.")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔑 네이버 API 설정 (선택)")
+naver_client_id = st.sidebar.text_input("Client ID", type="password")
+naver_client_secret = st.sidebar.text_input("Client Secret", type="password")
+
+
+def search_news_by_period(
+    keyword, start_dt, end_dt, client_id, client_secret, display=30
+):
+  """네이버 뉴스 검색 API를 통해 선택한 기간 내 보도된 기사 수집"""
+  # API 키가 없는 경우 테스트용 샘플 데이터 반환
+  if not client_id or not client_secret:
+    random_hour = random.randint(8, 20)
+    random_min = random.randint(0, 59)
+    sample_dt = datetime.combine(start_dt, datetime.min.time()) + timedelta(
+        hours=random_hour, minutes=random_min
+    )
+    return [
+        {
+            "keyword": keyword,
+            "title": f"[{keyword}] 실제 뉴스 제목 샘플 예시입니다.",
+            "content": f"이것은 {keyword}와 관련된 상세 테스트용 본문 설명입니다.",
+            "date": sample_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "link": "https://news.naver.com",
+            "publisher": "메이저",
+        }
+    ]
+
+  url = (
+      f"https://openapi.naver.com/v1/search/news.json?query={keyword}"
+      f"&display={display}&sort=date"
+  )
+  headers = {
+      "X-Naver-Client-Id": client_id,
+      "X-Naver-Client-Secret": client_secret,
+  }
+
+  try:
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+      return []
+
+    items = response.json().get("items", [])
+    parsed_articles = []
+
+    for item in items:
+      pub_date_str = item["pubDate"]
+      try:
+        pub_dt = datetime.strptime(pub_date_str[5:25], "%d %b %Y %H:%M:%S")
+      except:
+        pub_dt = datetime.now()
+
+      pub_date_only = pub_dt.date()
+
+      if start_dt <= pub_date_only <= end_dt:
+        title = re.sub(r"<.*?>", "", item["title"])
+        description = re.sub(r"<.*?>", "", item["description"])
+        # 실제 뉴스 기사로 정확히 이동하도록 네이버 뉴스 링크 사용
+        link = item["link"]
+
+        major_press = [
+            "chosun",
+            "joins",
+            "donga",
+            "hani",
+            "khan",
+            "mk",
+            "hankyung",
+            "yna",
+            "sbs",
+            "kbs",
+            "mbc",
+            "jtbc",
+            "edaily",
+            "머니투데이",
+        ]
+        publisher = (
+            "메이저"
+            if any(press in link for press in major_press)
+            else "일반"
+        )
+
+        parsed_articles.append({
+            "keyword": keyword,
+            "title": title,
+            "content": description,
+            "date": pub_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "link": link,
+            "publisher": publisher,
+        })
+
+    return parsed_articles
+  except Exception as e:
+    return []
+
+
+def process_and_sort_news(articles):
+  """중복 제거 및 우선순위 정렬"""
+  unique_articles = {}
+  for article in articles:
+    clean_title = re.sub(r"[^\w\s]", "", article["title"])
+    if clean_title not in unique_articles:
+      unique_articles[clean_title] = article
+
+  filtered_list = list(unique_articles.values())
+
+  sorted_articles = sorted(
+      filtered_list,
+      key=lambda x: (
+          0 if x["publisher"] == "메이저" else 1,
+          -len(x["content"]),
+          x["date"],
+      ),
+      reverse=False,
+  )
+  return sorted_articles
+
+
+# ==========================================
+# 메인 화면
+# ==========================================
+st.markdown(
+    f"📌 **현재 설정된 조회 기간**: `{start_date}` ~ `{end_date}` (총"
+    f" {(end_date - start_date).days + 1}일간)"
+)
+
+if st.button(
+    "🚀 조건에 맞는 뉴스 스크랩 시작", type="primary", use_container_width=True
+):
+  keywords = st.session_state.keyword_list
+
+  if not keywords:
+    st.warning("등록된 키워드가 없습니다. 사이드바에서 키워드를 추가해주세요.")
+  elif start_date > end_date:
+    st.error("시작일이 종료일보다 늦을 수 없습니다. 기간을 다시 설정해주세요.")
+  else:
+    all_articles = []
+    with st.spinner("선택된 기간의 뉴스를 수집하고 분석 중입니다..."):
+      for kw in keywords:
+        results = search_news_by_period(
+            kw,
+            start_date,
+            end_date,
+            naver_client_id,
+            naver_client_secret,
+            display=20,
+        )
+        all_articles.extend(results)
+
+    final_articles = process_and_sort_news(all_articles)
+
+    # 💡 뉴스가 없을 때는 결과 영역을 아예 보여주지 않도록 처리
+    if not final_articles:
+      st.info(
+          "📭 선택하신 기간 내 조건에 일치하는 뉴스가 없습니다. (결과 없음)"
+      )
+    else:
+      st.success(f"🎉 총 {len(final_articles)}건의 유효 기사가 수집되었습니다!")
+
+      table_data = []
+      for idx, item in enumerate(final_articles, 1):
+        table_data.append({
+            "순서": idx,
+            "키워드": item["keyword"],
+            "뉴스제목": item["title"],
+            "보도일자": item["date"],
+            "바로가기 링크": item["link"],
+        })
+
+      df_result = pd.DataFrame(table_data)
+
+      st.markdown("### 📋 수집 결과 테이블")
+
+      st.dataframe(
+          df_result,
+          column_config={
+              "바로가기 링크": st.column_config.LinkColumn(
+                  "바로가기 링크", display_text="🔗 실제 기사 열기"
+              ),
+              "순서": st.column_config.NumberColumn("순서", format="%d"),
+          },
+          hide_index=True,
+          use_container_width=True,
+      )
+
+      csv = df_result.to_csv(index=False).encode("utf-8-sig")
+      st.download_button(
+          label="📥 결과 CSV 파일로 다운로드",
+          data=csv,
+          file_name=(
+              f"news_scrap_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv"
+          ),
+          mime="text/csv",
+      )
